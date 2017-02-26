@@ -5,31 +5,39 @@
 #
 
 import /init.environ.rc
-import /init.usb.rc
+# Mer handles usb stuff
+#import /init.usb.rc
 import /init.${ro.hardware}.rc
 import /init.usb.configfs.rc
-import /init.${ro.zygote}.rc
+#import /init.${ro.zygote}.rc
 import /init.trace.rc
 # Include CM's extra init file
 import /init.cm.rc
 
 
 on early-init
-    # Set init and its forked children's oom_adj.
-    write /proc/1/oom_score_adj -1000
+
+    # Apply strict SELinux checking of PROT_EXEC on mmap/mprotect calls.
+    write /sys/fs/selinux/checkreqprot 0
+
+    # Set the security context for the init process.
+    # This should occur before anything else (e.g. ueventd) is started.
+    setcon u:r:init:s0
+
 
     # Set the security context of /adb_keys if present.
     restorecon /adb_keys
 
-    mount debugfs /sys/kernel/debug /sys/kernel/debug mode=755
-
-    start ueventd
+    mkdir /mnt 0775 root system
 
 on init
     sysclktz 0
 
     # Backward compatibility.
-    symlink /system/etc /etc
+    #symlink /system/etc /etc
+
+    loglevel 64
+
     symlink /sys/kernel/debug /d
 
     # Link /vendor to /system/vendor for devices without a vendor partition.
@@ -37,7 +45,6 @@ on init
 
     # Create cgroup mount point for cpu accounting
     mkdir /acct
-    mount cgroup none /acct cpuacct
     mkdir /acct/uid
 
     # Create cgroup mount point for memory
@@ -88,19 +95,17 @@ on init
     symlink /storage/self/primary /sdcard
     symlink /mnt/user/0/primary /mnt/runtime/default/self/primary
 
-    # memory control cgroup
-    mkdir /dev/memcg 0700 root system
-    mount cgroup none /dev/memcg memory
-
     write /proc/sys/kernel/panic_on_oops 1
     write /proc/sys/kernel/hung_task_timeout_secs 0
-    write /proc/cpu/alignment 4
+
+    #write /proc/cpu/alignment 4
 
     # scheduler tunables
     # Disable auto-scaling of scheduler tunables with hotplug. The tunables
     # will vary across devices in unpredictable ways if allowed to scale with
     # cpu cores.
     write /proc/sys/kernel/sched_tunable_scaling 0
+
     write /proc/sys/kernel/sched_latency_ns 10000000
     write /proc/sys/kernel/sched_wakeup_granularity_ns 2000000
     write /proc/sys/kernel/sched_compat_yield 1
@@ -152,12 +157,18 @@ on init
     mkdir /dev/cpuset/foreground
     write /dev/cpuset/foreground/cpus 0
     write /dev/cpuset/foreground/mems 0
+    write /dev/cpuset/foreground/cpuset.cpus 0
+    write /dev/cpuset/foreground/cpuset.mems 0
     mkdir /dev/cpuset/foreground/boost
     write /dev/cpuset/foreground/boost/cpus 0
     write /dev/cpuset/foreground/boost/mems 0
+    write /dev/cpuset/foreground/boost/cpuset.cpus 0
+    write /dev/cpuset/foreground/boost/cpuset.mems 0
     mkdir /dev/cpuset/background
     write /dev/cpuset/background/cpus 0
     write /dev/cpuset/background/mems 0
+    write /dev/cpuset/background/cpuset.cpus 0
+    write /dev/cpuset/background/cpuset.mems 0
 
     # system-background is for system tasks that should only run on
     # little cores, not on bigs
@@ -165,6 +176,8 @@ on init
     mkdir /dev/cpuset/system-background
     write /dev/cpuset/system-background/cpus 0
     write /dev/cpuset/system-background/mems 0
+    write /dev/cpuset/system-background/cpuset.cpus 0
+    write /dev/cpuset/system-background/cpuset.mems 0
 
     # change permissions for all cpusets we'll touch at runtime
     chown system system /dev/cpuset
@@ -185,7 +198,6 @@ on init
     chmod 0664 /dev/cpuset/background/tasks
     chmod 0664 /dev/cpuset/system-background/tasks
     chmod 0664 /dev/cpuset/tasks
-
 
     # qtaguid will limit access to specific data based on group memberships.
     #   net_bw_acct grants impersonation of socket owners.
@@ -256,11 +268,10 @@ on late-init
 on post-fs
     start logd
     # once everything is setup, no need to modify /
-    mount rootfs rootfs / ro remount
-    # Mount shared so changes propagate into child namespaces
-    mount rootfs rootfs / shared rec
-    # Mount default storage into root namespace
-    mount none /mnt/runtime/default /storage slave bind rec
+
+    # mount rootfs rootfs / ro remount
+    # mount shared so changes propagate into child namespaces
+    # mount rootfs rootfs / shared rec
 
     # We chown/chmod /cache again so because mount is run as root + defaults
     chown system cache /cache
@@ -305,7 +316,7 @@ on post-fs-data
 
     # Make sure we have the device encryption key
     start logd
-    start vold
+    #start vold
     installkey /data
 
     # Start bootcharting as soon as possible after the data partition is
@@ -418,8 +429,9 @@ on post-fs-data
 on boot
     # basic network init
     ifup lo
-    hostname localhost
-    domainname localdomain
+# Conflicts with Mer
+    #hostname localhost
+    #domainname localdomain
 
     # set RLIMIT_NICE to allow priorities from 19 to -20
     setrlimit 13 40 40
@@ -505,8 +517,12 @@ on boot
     # Define default initial receive window size in segments.
     setprop net.tcp.default_init_rwnd 60
 
+    # Allow system group to trigger vibrator
+    chmod 0664 /sys/class/timed_output/vibrator/enable
     class_start core
+    class_start main
 
+# Never gets called, since Mer does its own 'mount_all'
 on nonencrypted
     class_start main
     class_start late_start
@@ -520,6 +536,10 @@ on property:vold.decrypt=trigger_encryption
 
 on property:sys.init_log_level=*
     loglevel ${sys.init_log_level}
+
+# Mer needs to set this property when fs units are mounted
+on property:droid.late_start=trigger_late_start
+    class_start late_start
 
 on charger
     class_start charger
@@ -571,6 +591,8 @@ service ueventd /sbin/ueventd
     class core
     critical
     seclabel u:r:ueventd:s0
+# Not used by Mer
+    disabled
 
 service logd /system/bin/logd
     class core
@@ -590,6 +612,8 @@ service healthd /sbin/healthd
     critical
     seclabel u:r:healthd:s0
     group root system
+# Not used by Mer - spams logs and small battery drain
+    disabled
 
 service console /system/bin/sh
     class core
@@ -615,9 +639,10 @@ on property:ro.kernel.qemu=1
 
 service lmkd /system/bin/lmkd
     class core
-    critical
     socket lmkd seqpacket 0660 system system
     writepid /dev/cpuset/system-background/tasks
+    disabled
+
 
 service servicemanager /system/bin/servicemanager
     class core
@@ -625,10 +650,31 @@ service servicemanager /system/bin/servicemanager
     group system
     critical
     onrestart restart healthd
-    onrestart restart zygote
-    onrestart restart media
-    onrestart restart surfaceflinger
-    onrestart restart drm
+    onrestart restart minimedia
+    onrestart restart minisf
+    onrestart restart miniaf
+#    onrestart restart zygote
+#    onrestart restart media
+#    onrestart restart surfaceflinger
+#    onrestart restart drm
+
+service minimedia /usr/libexec/droid-hybris/system/bin/minimediaservice
+    class main
+    user media
+    group audio camera
+    ioprio rt 4
+    setenv LD_PRELOAD /usr/libexec/droid-hybris/system/lib/libcameraservice.so
+    setenv LD_LIBRARY_PATH /vendor/lib:/system/lib
+
+service minisf /usr/libexec/droid-hybris/system/bin/minisfservice
+    class main
+    user system
+    group graphics
+
+service miniaf /usr/libexec/droid-hybris/system/bin/miniafservice
+    class main
+    user system
+    group audio
 
 service vold /system/bin/vold \
         --blkid_context=u:r:blkid:s0 --blkid_untrusted_context=u:r:blkid_untrusted:s0 \
@@ -637,17 +683,23 @@ service vold /system/bin/vold \
     socket vold stream 0660 root mount
     socket cryptd stream 0660 root mount
     ioprio be 2
+    # Not used in Mer
+    disabled
 
-service netd /system/bin/netd
-    class main
-    socket netd stream 0660 root system
-    socket dnsproxyd stream 0660 root inet
-    socket mdns stream 0660 root system
-    socket fwmarkd stream 0660 root inet
+# Disabled in Mer: conflicts with connman beyond usability
+# This will no longer work for mako: `ndc softap fwreload wlan0 AP` to reload mako firmware
+# mako (and similar fwreload) porters need to seek for alternative solution, see NEMO#793
+#service netd /system/bin/netd
+#    class main
+#    socket netd stream 0660 root system
+#    socket dnsproxyd stream 0660 root inet
+#    socket mdns stream 0660 root system
+#    socket fwmarkd stream 0660 root inet
+#    disabled
 
-service debuggerd /system/bin/debuggerd
-    class main
-    writepid /dev/cpuset/system-background/tasks
+#service debuggerd /system/bin/debuggerd
+#    class main
+#    writepid /dev/cpuset/system-background/tasks
 
 service debuggerd64 /system/bin/debuggerd64
     class main
@@ -661,22 +713,26 @@ service ril-daemon /system/bin/rild
     user root
     group radio cache inet misc audio log qcom_diag
 
+# Disabled in Mer - used only during porting atm
 service surfaceflinger /system/bin/surfaceflinger
     class core
     user system
     group graphics drmrpc
     onrestart restart zygote
+    disabled
 
-service drm /system/bin/drmserver
-    class main
-    user drm
-    group drm system inet drmrpc
+#service drm /system/bin/drmserver
+#    class main
+#    user drm
+#    group drm system inet drmrpc
 
+# Disabled in Mer
 service media /system/bin/mediaserver
     class main
     user media
     group audio camera inet net_bt net_bt_admin net_bw_acct drmrpc mediadrm qcom_diag
     ioprio rt 4
+    disabled
 
 # One shot invocation to deal with encrypted volume.
 service defaultcrypto /system/bin/vdc --wait cryptfs mountdefaultencrypted
@@ -703,6 +759,7 @@ service bootanim /system/bin/bootanimation
 service gatekeeperd /system/bin/gatekeeperd /data/misc/gatekeeper
     class late_start
     user system
+    disabled
 
 service installd /system/bin/installd
     class main
@@ -733,10 +790,13 @@ service mtpd /system/bin/mtpd
     disabled
     oneshot
 
+# disabled in Mer
 service keystore /system/bin/keystore /data/misc/keystore
     class main
     user keystore
     group keystore drmrpc
+    # Not used in Mer
+    disabled
 
 service dumpstate /system/bin/dumpstate -s
     class main
@@ -744,17 +804,18 @@ service dumpstate /system/bin/dumpstate -s
     disabled
     oneshot
 
-service mdnsd /system/bin/mdnsd
-    class main
-    user mdnsr
-    group inet net_raw
-    socket mdnsd stream 0660 mdnsr inet
-    disabled
-    oneshot
-
 service uncrypt /system/bin/uncrypt
     class main
     disabled
+
+# This trigger is run by our modified init after boot has finished
+on ready
+    class_start mer
+
+# Notify Mer's systemd that we're done
+# This is started at the end of boot after both core and main classes
+service droid_init_done /bin/sh /usr/bin/droid/droid-init-done.sh
+    class mer
     oneshot
 
 service pre-recovery /system/bin/uncrypt --reboot
